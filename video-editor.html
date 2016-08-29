@@ -1,0 +1,492 @@
+<!-- <link rel="import" href="../../assets/bower_components/polymer/polymer.html"> -->
+<link rel="import" href="https://polygit2.appspot.com/components/polymer/polymer.html">
+<link rel="import" href="../smart-slider/smart-slider.html">
+
+<dom-module id="video-editor">
+
+	<template>
+		<div class="dd-streamedit">
+			<video class="dd-streamedit__player" preload="auto" src="{{src}}" id="video"></video>
+			<div class="toolbar">
+				<template is="dom-if" if="{{paused}}">
+					<button on-click="playVideo" class="toolbar-control__play">
+						<i class="kdicon-play"></i>
+					</button>
+				</template>
+				<template is="dom-if" if="{{!paused}}">
+					<button on-click="pauseVideo" class="toolbar-control__pause">
+						<i class="kdicon-pause"></i>
+					</button>
+				</template>
+
+				<div class="toolbar-time__start">{{currentTime}}</div>
+				<div class="toolbar-track">
+					<smart-slider id="trackSlider" min="0"
+					              max="1000"
+					              on-slide="onVideoSlide"
+					              left-slide="0"
+					              right-slide="1000"
+					              class="toolbar-track__slider">
+						<div id="track" class="toolbar-track__line"></div>
+						<span class="toolbar-track__loaded-bar" id="loaded"></span>
+						<span class="toolbar-track__controls" id="rail">
+							<span class="toolbar-track__current-time" id="current"></span>
+						</span>
+					</smart-slider>
+				</div>
+				<div class="toolbar-time__end">{{duration}}</div>
+				<button class="button toolbar-control__volume" on-click="showVolumeSlider" id="volume">
+					<i class="kdicon-volume"></i>
+				</button>
+				<div id="volumeSliderBlock" class="toolbar-volume">
+					<smart-slider id="volumeSlider" class="toolbar-volume__slider"
+					              min="0"
+					              max="10"
+					              start="0"
+					              step="1"
+					              orientation="vertical"
+					              on-slide="changeVolume">
+					</smart-slider>
+				</div>
+				<button class="button toolbar-control__full-screen" on-click="fullScreen">
+					<i class="kdicon-fullscreen"></i>
+				</button>
+			</div>
+		</div>
+	</template>
+
+	<script>
+		Polymer({
+			is: "video-editor",
+			properties: {
+				// URL видео
+				src: {
+					type: String
+				},
+
+				// положение левого ползунка в секундах
+				start: {
+					type: Number
+				},
+
+				// положение правого ползунка в секундах
+				end: {
+					type: Number
+				}
+			},
+
+			ready: function() {
+				// Получение элемнетов управления слайдером и полосы загрузки
+				this.video = this.$.video;
+				this.current = this.$.current;
+				this.rail = this.$.rail;
+				this.loaded = this.$.loaded;
+				this.trackSlider = this.$.trackSlider;
+				this.volumeSliderBlock = this.$.volumeSliderBlock;
+				this.volumeSlider = this.$.volumeSlider;
+
+				this.paused = true; // Поставлено ли видео на паузу
+				this.currentTime = null; // Текущее время в секундах
+				this.duration = null; // Продолжительность видео в секундах
+				this.placeLine = 0;
+				this.typeAction = '';
+                this.currentFlagWidth = 3;
+
+				this.startFlagPosition; // начальное время в интервале от 0 до 1000
+				this.endFlagPosition; // конечное время в интервале от 0 до 1000
+
+				// Для iphone и ipad устанавливаем атрибут autoplay, потому что
+				// без него не срабатывает событие timeupdate
+				if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i)) {
+					this.video.setAttribute('autoplay', true);
+				}
+
+				this.rightSlider = document.getElementsByClassName('noUi-handle-upper')[0]; // @todo
+				this.leftSlider = document.getElementsByClassName('noUi-handle-lower')[0]; // @todo
+
+				this.changeStyles();
+				this.addEventHandlers();
+                this.initDragAndDrop();
+			},
+
+			/**
+			 * Создание панели управления видеоплеера
+			 */
+			changeStyles: function () {
+				// @todo: Проверить, нужно ли всё это
+
+				var trackSlider__ = document.getElementsByClassName('noUi-base')[0];
+				var volumeSlider__ = document.getElementsByClassName('noUi-handle-lower')[1];
+
+				// Элементам слайдера добавляем свои классы стилей
+				if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+					this.leftSlider.classList.add('noUi-handletouch');
+					this.rightSlider.classList.add('noUi-handletouch');
+
+					this.leftSlider.classList.add('noUi-handle-lowertouch');
+					this.rightSlider.classList.add('noUi-handle-uppertouch');
+				} else {
+					this.leftSlider.classList.add('noUi-handletwo');
+					this.rightSlider.classList.add('noUi-handletwo');
+				}
+
+				volumeSlider__.classList.add('noUi-handle-volume');
+				trackSlider__.classList.add('noUi-basetwo');
+				document.getElementsByClassName('noUi-target')[0].classList.add('noUi-basetwo');
+
+				if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+					this.current.style.width = '12px';
+					this.current.style.height = '30px';
+					this.current.style.top = '-15px';
+					this.current.style.left = '-4px';
+				}
+
+				var volumeSlider = this.$.volumeSlider.children[0];
+				volumeSlider.style.height = '100%';
+			},
+
+			addEventHandlers: function() {
+				this.video.addEventListener('ended', this.onVideoEndedHandler.bind(this), false);
+				this.video.addEventListener('loadedmetadata', this.onVideoLoadedMetadata.bind(this), false);
+				this.video.addEventListener('timeupdate', this.onVideoTimeUpdate.bind(this), false);
+				this.video.addEventListener('progress', this.onChangeVideoProgress.bind(this), false);
+				window.addEventListener('resize', this.onVideoTimeUpdate.bind(this));
+				this.video.addEventListener('play', this.onPlay.bind(this), false);
+				this.video.addEventListener('pause', this.onPause.bind(this), false);
+
+				var hammer = new Hammer.Manager(document.getElementsByClassName('noUi-connect')[0]);
+				hammer.add( new Hammer.Tap() );
+				hammer.on("tap", this.clickNewPosition.bind(this));
+			},
+
+			onVideoLoadedMetadata: function() {
+				this.startFlagPosition = this.getStartFlagPosition(this.start, this.video.duration);
+				this.endFlagPosition = this.getEndFlagPosition(this.end, this.video.duration);
+
+				this.video.currentTime = this.start;
+
+				this.setEndFlagPosition(this.endFlagPosition);
+				this.setStartFlagPosition(this.startFlagPosition);
+
+				this.duration = this.formatTime(this.video.duration);
+				this.currentTime = this.formatTime(this.video.currentTime);
+
+				this.setCurrentFlagPosition();
+			},
+
+			getStartFlagPosition: function(startTime, durationTime) {
+				return Number(((startTime / durationTime) * 1000).toFixed(2));
+			},
+
+			getEndFlagPosition: function(endTime, durationTime) {
+				if (endTime) {
+					return Number(((endTime / durationTime) * 1000).toFixed(2));
+				}
+				return 1000;
+			},
+
+			setStartFlagPosition: function(position) {
+				this.trackSlider.setAttribute('left-slide', position);
+			},
+
+			setEndFlagPosition: function(position) {
+				this.trackSlider.setAttribute('right-slide', position);
+			},
+
+			formatTime: function(time) {
+				return Math.floor(time / 60) + ':' + Math.floor(time - Math.floor(time / 60) * 60);
+			},
+
+            /**
+             * Метод отрисовывает маркер текущей позиции. Если маркер находится в конце интервала, то
+             * происходит небольшая коррекция с учетом ширины маркера, чтобы маркер не налезал на ползунок
+             * */
+			setCurrentFlagPosition: function() {
+//				var rightSlider = this.rightSlider.getBoundingClientRect();
+				var leftSlider = this.leftSlider.getBoundingClientRect();
+				var rail = this.rail.getBoundingClientRect();
+
+                var newPosition = Math.round(rail.width * this.video.currentTime / this.video.duration);
+
+//				if (newPosition > rightSlider.left - rail.left - this.currentFlagWidth) {
+//                    newPosition = rightSlider.left - rail.left - this.currentFlagWidth;
+//				}
+
+                this.current.style.left = newPosition + 'px';
+                this.placeLine = Number(this.current.style.left.substring(0, this.current.style.left.indexOf('px')));
+            },
+
+
+            /**
+             * При изменении текущего времени, мы ставим в соответствующее место маркер текущего времени и
+             * выводим текущее время.
+             *
+             * Если видео проигрывается, то со слайдеров убираются границы, а полоса загрузки становится видимой
+             *
+             * Также проверяем, не вышло ли время за рамки кропа. Если ваышло, то
+             * ставим маркер в начало и ставим видео на паузу
+             * */
+			onVideoTimeUpdate: function () {
+                if (this.typeAction === 'drag') {
+                    return;
+                }
+
+				if (!this.video.paused) {
+				    this.demarkStartFlag();
+                    this.demarkEndFlag();
+                    this.showCurrentFlag();
+
+					if (this.video.currentTime >= this.end) {
+						if (!navigator.userAgent.match(/iPhone/i) && !navigator.userAgent.match(/iPad/i) && !navigator.userAgent.match(/Android/i)) {
+							this.pauseVideo();
+						}
+						this.video.currentTime = this.start;
+					}
+				}
+	            if (this.video.currentTime <= this.start) {
+		            this.video.currentTime = this.start;
+	            }
+
+                this.currentTime = this.formatTime(this.video.currentTime);
+
+				this.setCurrentFlagPosition();
+			},
+
+			playVideo: function () {
+				this.video.play();
+			},
+			pauseVideo: function () {
+				this.video.pause();
+			},
+
+			onPlay: function() {
+				this.paused = false;
+			},
+
+			onPause: function() {
+				this.paused = true;
+			},
+
+            /**
+             * Возвращает время в секундах по переданному положению (от 0 до 1000)
+             * и общей продолжительности видео
+             * */
+			getTimeByPosition: function(position, duration) {
+				return (position * duration / 1000).toFixed(2);
+			},
+
+			/**
+			 * При движении слайдера и установке значений
+			 */
+			onVideoSlide: function (event) {
+				var newValue = event.detail.newValue;
+
+				this.start = this.getTimeByPosition(newValue[0], this.video.duration);
+				this.end = this.getTimeByPosition(newValue[1], this.video.duration);
+
+                this.hideCurrentFlag();
+
+                // Если перемещен левый ползунок, то ставим текущий маркер к левому ползунку
+				if (this.startFlagPosition !== Number(newValue[0].toFixed(2))) {
+                    this.demarkEndFlag();
+				    this.markStartFlag();
+					this.video.currentTime = this.start;
+				}
+                // Если перемещен правый ползунок, то ставим текущий маркер к правому  ползунку
+				else if (this.endFlagPosition !== Number(newValue[1].toFixed(2))) {
+				    this.demarkStartFlag();
+                    this.markEndFlag();
+					this.video.currentTime = this.end;
+				}
+
+				this.currentTime = this.formatTime(this.video.currentTime);
+
+				this.startFlagPosition = Number(newValue[0].toFixed(2));
+				this.endFlagPosition = Number(newValue[1].toFixed(2));
+			},
+
+            // Дорисовываем красную границу левому бегунку
+            markStartFlag: function() {
+                if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+                    this.leftSlider.classList.add('noUi-active-lefttouch');
+                } else {
+                    this.leftSlider.classList.add('noUi-active-left');
+                }
+            },
+
+            // Дорисовываем красную границу правому бегунку
+            markEndFlag: function() {
+                if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+                    this.rightSlider.classList.add('noUi-active-righttouch');
+                } else {
+                    this.rightSlider.classList.add('noUi-active-right');
+                }
+            },
+
+            // Убираем красную границу левому бегунку
+            demarkStartFlag: function() {
+                if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+                    this.leftSlider.classList.remove('noUi-active-lefttouch');  // Этот класс дорисовывает красную границу бегунку
+                } else {
+                    this.leftSlider.classList.remove('noUi-active-left');  // Этот класс дорисовывает красную границу бегунку
+                }
+            },
+
+            // Убираем красную границу правому бегунку
+            demarkEndFlag: function() {
+                if (navigator.userAgent.match(/iPhone/i) || navigator.userAgent.match(/iPad/i) || navigator.userAgent.match(/Android/i)) {
+                    this.rightSlider.classList.remove('noUi-active-righttouch');  // Этот класс дорисовывает красную границу бегунку
+                } else {
+                    this.rightSlider.classList.remove('noUi-active-right');  // Этот класс дорисовывает красную границу бегунку
+                }
+            },
+
+            showCurrentFlag: function() {
+                //this.current.style.backgroundColor = '#B14D4D';
+                this.current.style.opacity = '1';
+            },
+
+            hideCurrentFlag: function() {
+                //this.current.style.backgroundColor = 'green';
+                this.current.style.opacity = '0';
+            },
+
+			onChangeVideoProgress: function() {
+                if (this.video.buffered && this.video.buffered.end && this.video.buffered.length > 0 && this.video.duration) {
+                    // Буфферизованные участки хранятся в массиве. Просматриваем все участки
+                    for (var i = 0; i < this.video.buffered.length; i++) {
+                        // Если текущее время находится между начальным и конечным временем этого участка, то берем его значения
+                        if (this.video.buffered.start(i) <= this.video.currentTime && this.video.buffered.end(i) >= this.video.currentTime) {
+                            var bufferedEnd = this.video.buffered.end(i);
+                            var bufferedStart = this.video.buffered.start(i);
+                            var duration = this.video.duration;
+
+                            // Рассчитываем новую ширину полосы загруженного участка, рисуем ее от места клика
+                            this.loaded.style.width = (((bufferedEnd - bufferedStart) / duration) * 100) + "%";
+                            this.loaded.style.left = ((bufferedStart / duration) * 100) + "%";
+                            break;
+                        }
+                    }
+                }
+			},
+
+            /**
+             * Изменение звука при изменении значений слайдера
+             */
+            changeVolume: function (event) {
+                var newValue = event.detail.newValue;
+
+                this.video.volume = 1 - Number(newValue[0] / 10);
+            },
+
+            /**
+             * Отобразить слайдер изменения звука
+             */
+            showVolumeSlider: function () {
+                if (this.volumeSliderBlock.style.display === 'none' || this.volumeSliderBlock.style.display === '')
+                    this.volumeSliderBlock.style.display = 'block';
+                else
+                    this.volumeSliderBlock.style.display = 'none';
+            },
+
+            fullScreen: function () {
+                if (this.video.requestFullScreen) {
+                    this.video.requestFullScreen();
+                } else if (this.video.mozRequestFullScreen) {
+                    this.video.mozRequestFullScreen();
+                } else if (this.video.webkitRequestFullScreen) {
+                    this.video.webkitRequestFullScreen();
+                }
+            },
+
+            onVideoEndedHandler: function() {
+                // Когда видео заканчивается, устанавливаем текущим начальное время
+                this.video.currentTime = this.start;
+                this.currentTime = this.formatTime(this.video.currentTime);
+            },
+
+            /**
+             * Установка нового текущего времени и положения полосы при клике
+             */
+            clickNewPosition: function (event) {
+                var rail = this.rail.getBoundingClientRect();
+
+                if (event.pointers[0].x) {
+                    var clickCoord = event.pointers[0].x - rail.left;
+                } else if (event.pointers[0].clientX) {
+                    var clickCoord = event.pointers[0].clientX - rail.left;
+                }
+
+                var newTime = Number(clickCoord) * 1000 / Number(rail.width);
+                var newSec = (newTime * this.video.duration / 1000).toFixed(2);
+
+                this.typeAction = 'click';
+
+                this.video.currentTime = newSec;
+
+                this.demarkStartFlag();
+                this.demarkEndFlag();
+                this.showCurrentFlag();
+            },
+
+            initDragAndDrop: function() {
+                this.placeLine = 0;
+                var DnD = new DD.fx.DragDropHelper({
+                    'source': [this.current],
+                    'target': [this.current],
+                    'allowClassNames': 'toolbar-track__current-time',
+                    'lapseThreshold': {desktop: 0, sensor: 0},
+                    'pixelThreshold': {desktop: 0, sensor: 0},
+                    'dropZoneTime': {desktop: 0, sensor: 0},
+                    'showDragImage'    : false,
+                    'onDragDrop': this.dropLine.bind(this),
+                    'onDragOver': this.overLine.bind(this)
+                });
+            },
+
+            dropLine: function() {
+                this.typeAction = 'drop';
+                this.placeLine = Number(this.current.style.left.substring(0, this.current.style.left.indexOf('px')));
+            },
+
+            overLine: function(event) {
+                this.typeAction = 'drag';
+
+                var newCoord = event.resource.deltaX;
+                this.demarkStartFlag();
+                this.demarkEndFlag();
+                this.showCurrentFlag();
+
+                var rightSlider = this.rightSlider.getBoundingClientRect();
+                var leftSlider = this.leftSlider.getBoundingClientRect();
+                var rail = this.rail.getBoundingClientRect();
+                var delta;
+                if ((this.placeLine + newCoord < rightSlider.left - rail.left + 1) && (this.placeLine + newCoord > leftSlider.right - rail.left)) {
+                    this.current.style.left = this.placeLine + newCoord + 'px';
+                    delta = this.placeLine + newCoord;
+                } else if (this.placeLine + newCoord > rightSlider.left - rail.left + 1) {
+                    this.current.style.left = rightSlider.left - rail.left + 'px';
+                    delta = rightSlider.left - rail.left;
+                    this.typeAction = 'dragend';
+                    //this.current.style.opacity = '0';
+                    //this.rightSlider.classList.add('noUi-active-right');
+                } else if (this.placeLine + newCoord < leftSlider.right - rail.left) {
+                    this.current.style.left = leftSlider.right - rail.left + 'px';
+                    delta = leftSlider.right - rail.left;
+                    //this.typeAction = 'start';
+                }
+
+                var trackSizes = this.rail.getBoundingClientRect();
+                var clickCoord = delta;
+                var newTime = Number(clickCoord) * 1000 / Number(trackSizes.width);
+                var newSec = (newTime * this.video.duration / 1000).toFixed(2);
+
+                if (newSec !== 'NaN') {
+                    this.video.currentTime = Number(newSec);
+                    this.currentTime = this.formatTime(this.video.currentTime);
+                }
+            }
+		});
+	</script>
+
+</dom-module>
